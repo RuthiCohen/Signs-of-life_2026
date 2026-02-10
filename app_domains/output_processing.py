@@ -301,6 +301,9 @@ def UploadSample(sample):
 		return
 	domain = sample['url']
 	try:
+		if not RUN_CONFIG.get("UPLOADSCREENSHOOTSTOLABTOOLS", False):
+			return
+
 		# grab session to use
 		session = get_session()
 		image_upload_url = RUN_CONFIG["SAMPLING_REST_API_IMAGE_URL"]
@@ -363,6 +366,11 @@ def get_session():
 
 def ProcessSamples(samples):
 	sam_plog.it(f"Processing {len(samples)} samples")
+
+	if not RUN_CONFIG.get("UPLOADSCREENSHOOTSTOLABTOOLS", False):
+		sam_plog.it("Sample upload to LABTOOLS is disabled by config")
+		return
+	
 	if RUN_CONFIG['MULTI_PROCESSING']:
 		pool = ThreadPool(processes=RUN_CONFIG['WORKERS_POST_PROCESSING'])
 		results = pool.map(UploadSample, samples)

@@ -443,6 +443,14 @@ def async_url_batch_visit(partial_dict_unique, do_sampling=False):
     """ Start Asynchronous loop"""
     loop = asyncio.new_event_loop()
     loop.run_until_complete(main_async_batch_visit(partial_dict_unique, loop, do_sampling))
+    if RUN_CONFIG.get("DO_SAMPLING", False):
+        sample_links = [d for d in partial_dict_unique if d.get("to_sample")]
+        if sample_links:
+            sam_plog.it(
+                f"Launching browser visits for {len(sample_links)} samples"
+            )
+            request_full_file_with_browser(sample_links)
+
     loop.close()
 
 

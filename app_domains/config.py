@@ -61,7 +61,6 @@ RUN_CONFIG = {
     "DNS_DKIM_TIMEOUT": 15, # DKIM extraction has an action that requires a timeout decleration, otherwise the process is stuck
                             # This timeout is set separately for every domain, so it's recommended to set a long timeout
 
-
     # REQUESTS ENGINE
     # "USE_UVLOOP": True,
     "USE_UVLOOP": False,
@@ -150,7 +149,7 @@ RUN_CONFIG = {
     # if True, the program will convert any csvs it finds in the output folder into the defined database and move the csvs to the storage folder
     # set these in the .env folder for security purposes, as this file is stored on the git.
     "USE_DB": False,
-    "DBNAME": "signs_of_life_crawler",  # database where you're going to store all the of data
+    "DBNAME": "signs_of_life",  # database where you're going to store all the of data
     "DBHOST": "dbpostgres",  # hostname or ip address of the db server
     "DBPORT": '5432',  # db access port
     "DBUSER": "postgres",  # db username
@@ -163,6 +162,10 @@ RUN_CONFIG = {
     # save intermediary files
     "DEBUG_MODE": False,
     "DEBUG_PRINT": False,
+
+    # LABTOOLS
+    "SAVESCREENSHOOTSTODISK": True,
+    "UPLOADSCREENSHOOTSTOLABTOOLS": False
 }
 
 # version
