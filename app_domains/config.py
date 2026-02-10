@@ -149,7 +149,7 @@ RUN_CONFIG = {
     # DATABASE STORAGE
     # if True, the program will convert any csvs it finds in the output folder into the defined database and move the csvs to the storage folder
     # set these in the .env folder for security purposes, as this file is stored on the git.
-    "USE_DB": False,
+    "USE_DB": True,
     "DBNAME": "signs_of_life",  # database where you're going to store all the of data
     "DBHOST": "dbpostgres",  # hostname or ip address of the db server
     "DBPORT": '5432',  # db access port
