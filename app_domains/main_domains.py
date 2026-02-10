@@ -45,7 +45,7 @@ EXPECTED_ORDER = ["url", "ind_non_schema", "pred_is_parked", "is_error", "commen
                   "dns_NS_comment", "dns_has_TXT", "dns_value_TXT", "dns_TXT_comment", "dns_has_AAAA", "dns_value_AAAA", "dns_AAAA_comment", 
                   "dns_has_SOA", "dns_value_SOA", "dns_SOA_comment", "dns_has_CAA", "dns_value_CAA", "dns_CAA_comment", "dns_has_CNAME", 
                   "dns_value_CNAME", "dns_CNAME_comment", "dns_has_dmarc", "dns_value_dmarc", "dns_dmarc_comment", 
-                  "dns_has_DKIM", "dns_value_DKIM", "dns_DKIM_comment"
+                  "dns_has_DKIM", "dns_value_DKIM", "dns_DKIM_comment", "dns_has_MX", "dns_value_MX", "dns_MX_comment"
                   ]
 
 
@@ -466,6 +466,21 @@ def main():
                             print("CRITICAL ERROR: dns DKIM data extraction failed: {}\t{}".format(type(e), str(e)))
                             plog.it("CRITICAL ERROR: dns data DKIM extraction failed: {}\t{}".format(type(e), str(e)), is_error=True)
                             raise
+
+                    if RUN_CONFIG["DO_DNS_MX"]:
+                        try:
+                            print("dns MX extraction")
+                            a = time.time()
+                            _ = ctl.collect_dns_data('MX')
+                            print("dns MX data extraction time : {}".format(time.time() - a))
+                        except Exception as e:
+                            print("CRITICAL ERROR: dns MX data extraction failed: {}\t{}".format(type(e), str(e)))
+                            plog.it(
+                                "CRITICAL ERROR: dns MX data extraction failed: {}\t{}".format(type(e), str(e)),
+                                is_error=True
+                            )
+                            raise
+
 
                 if RUN_CONFIG["DO_MAIL_EXCHANGE"]:
                     try:

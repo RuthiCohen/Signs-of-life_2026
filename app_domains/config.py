@@ -56,6 +56,7 @@ RUN_CONFIG = {
     "DO_DNS_RRSIG": True,
     "DO_DNS_SOA": True,
     "DO_DNS_TXT": True,
+    "DO_DNS_MX": True,
     "DO_DNS_DMARC": True,   # DMARC record will be gathered via TXT request. But there's need to set DO_DNS_TXT as True for this
     "DO_DNS_DKIM": True,    # Without the key, we can only check for DKIM existance. This is done via NS and A requests, but does not require the relevant tags to be set as True
     "DNS_DKIM_TIMEOUT": 15, # DKIM extraction has an action that requires a timeout decleration, otherwise the process is stuck

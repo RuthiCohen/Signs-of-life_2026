@@ -67,6 +67,27 @@ def extract_dns(feats):
             comment = 'Domain NS not found, unable to check for DKIM'
         except Exception as e:
             comment = f"Error fetching DKIM record: {e}"
+
+    elif(datatype == "MX"):
+        try:
+            answers = reso.resolve(url, 'MX')  # system resolver
+            parts = []
+            for rdata in answers:
+                parts.append(f"{int(rdata.preference)} {rdata.exchange}")
+            response = " | ".join(parts)
+        except reso.NoAnswer:
+            comment = "No answer"
+        except reso.NoNameservers:
+            comment = "No name server"
+        except dns.exception.Timeout:
+            comment = "Timeout"
+        except reso.NXDOMAIN:
+            comment = "No existing query name"
+        except Exception as e:
+            print("Special error: {} - {}".format(type(e), str(e)))
+            comment = str(e)
+
+
     else:
         # Making the function dynamic for any availabe dns.rdatatype classes
         try:
