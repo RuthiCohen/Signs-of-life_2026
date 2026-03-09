@@ -15,8 +15,8 @@ import json
 from multiprocessing.dummy import Pool as ThreadPool
 # performance logger
 from utils import PerformanceLogger
-plog = PerformanceLogger(filepath=join(RUN_CONFIG["MAIN_DIR"],"logging"), filename="db_perf.log", enable_logging = RUN_CONFIG['PERFORMANCE_LOGGING'])
-sam_plog = PerformanceLogger(filepath=join(RUN_CONFIG["MAIN_DIR"],"logging"), filename="sam_p.log", enable_logging = RUN_CONFIG['PERFORMANCE_LOGGING'])
+plog = PerformanceLogger(filepath=join(RUN_CONFIG["MAIN_DIR"],"logging"), filename=f"db_perf_{RUN_CONFIG['CONTAINER_ID']}.log", enable_logging = RUN_CONFIG['PERFORMANCE_LOGGING'])
+sam_plog = PerformanceLogger(filepath=join(RUN_CONFIG["MAIN_DIR"],"logging"), filename=f"sam_p_{RUN_CONFIG['CONTAINER_ID']}.log", enable_logging = RUN_CONFIG['PERFORMANCE_LOGGING'])
 sep = RUN_CONFIG["CSV_OUTPUT_DELIMITER"]
 
 

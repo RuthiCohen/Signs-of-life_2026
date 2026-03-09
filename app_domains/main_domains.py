@@ -29,7 +29,7 @@ loggers = [logging.getLogger()]  # get the root logger
 loggers = loggers + [logging.getLogger(name) for name in logging.root.manager.loggerDict]
 for log in loggers:
     log.setLevel(logging.WARNING)
-plog = PerformanceLogger(filename="main_perf.log", enable_logging=RUN_CONFIG['PERFORMANCE_LOGGING'])
+plog = PerformanceLogger(filename=f"main_perf_{RUN_CONFIG['CONTAINER_ID']}.log", enable_logging=RUN_CONFIG['PERFORMANCE_LOGGING'])
 
 EXPECTED_ORDER = ["url", "ind_non_schema", "pred_is_parked", "is_error", "comment", "is_redirected",
                   "redirection_type", "is_redirected_different_domain",

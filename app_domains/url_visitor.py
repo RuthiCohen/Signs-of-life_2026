@@ -54,11 +54,11 @@ loggers = loggers + [logging.getLogger(name) for name in logging.root.manager.lo
 for log in loggers:
     log.setLevel(logging.WARNING)
 
-req_plog = PerformanceLogger(filepath=join(RUN_CONFIG["MAIN_DIR"], "logging"), filename="req_p.log",
+req_plog = PerformanceLogger(filepath=join(RUN_CONFIG["MAIN_DIR"], "logging"), filename=f"req_p_{RUN_CONFIG['CONTAINER_ID']}.log",
                              enable_logging=RUN_CONFIG['PERFORMANCE_LOGGING'])
-main_plog = PerformanceLogger(filepath=join(RUN_CONFIG["MAIN_DIR"], "logging"), filename="main_p.log",
+main_plog = PerformanceLogger(filepath=join(RUN_CONFIG["MAIN_DIR"], "logging"), filename=f"main_p_{RUN_CONFIG['CONTAINER_ID']}.log",
                               enable_logging=RUN_CONFIG['PERFORMANCE_LOGGING'])
-sam_plog = PerformanceLogger(filepath=join(RUN_CONFIG["MAIN_DIR"], "logging"), filename="sam_p.log",
+sam_plog = PerformanceLogger(filepath=join(RUN_CONFIG["MAIN_DIR"], "logging"), filename=f"sam_p_{RUN_CONFIG['CONTAINER_ID']}.log",
                              enable_logging=RUN_CONFIG['PERFORMANCE_LOGGING'])
 tracemalloc.start()
 

@@ -27,12 +27,12 @@ loggers = loggers + [logging.getLogger(name) for name in logging.root.manager.lo
 for log in loggers:
     log.setLevel(logging.WARNING)
 
-plog = PerformanceLogger(filename="predictions_perf.log", to_screen=True,
+plog = PerformanceLogger(filename=f"predictions_perf_{RUN_CONFIG['CONTAINER_ID']}.log", to_screen=True,
                          enable_logging=RUN_CONFIG['PERFORMANCE_LOGGING'])
-plog2 = PerformanceLogger(filename="unit_predict_park_perf.log", to_screen=False,
+plog2 = PerformanceLogger(filename=f"unit_predict_park_perf{RUN_CONFIG['CONTAINER_ID']}.log", to_screen=False,
                           enable_logging=RUN_CONFIG['PERFORMANCE_LOGGING'])
 plog2.enabled = False  # just turning this off manually for now
-sam_plog = PerformanceLogger(filepath=join(RUN_CONFIG["MAIN_DIR"], "logging"), filename="sam_p.log",
+sam_plog = PerformanceLogger(filepath=join(RUN_CONFIG["MAIN_DIR"], "logging"), filename=f"sam_p_{RUN_CONFIG['CONTAINER_ID']}.log",
                              enable_logging=RUN_CONFIG['PERFORMANCE_LOGGING'])
 
 # Registrars

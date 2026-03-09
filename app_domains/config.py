@@ -2,6 +2,7 @@
 In particular, input mail selection, HTTP requests orchestration and scenario selection"""
 
 import os
+import socket
 from os.path import join
 
 MAIN_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
@@ -166,7 +167,9 @@ RUN_CONFIG = {
 
     # LABTOOLS
     "SAVESCREENSHOOTSTODISK": True,
-    "UPLOADSCREENSHOOTSTOLABTOOLS": False
+    "UPLOADSCREENSHOOTSTOLABTOOLS": False,
+
+    "CONTAINER_ID": socket.gethostname()
 }
 
 # version
@@ -212,4 +215,4 @@ except IOError:
 
 from utils import PerformanceLogger
 
-PLOG = PerformanceLogger(filename="main_perf.log", enable_logging=RUN_CONFIG['PERFORMANCE_LOGGING'])
+PLOG = PerformanceLogger(filename=f"main_perf_{RUN_CONFIG['CONTAINER_ID']}.log", enable_logging=RUN_CONFIG['PERFORMANCE_LOGGING'])

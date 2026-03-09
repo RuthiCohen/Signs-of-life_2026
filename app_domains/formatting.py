@@ -9,7 +9,7 @@ import re
 from config import RUN_CONFIG
 
 from utils import PerformanceLogger
-plog = PerformanceLogger(filename="formatting_perf.log", enable_logging=RUN_CONFIG['PERFORMANCE_LOGGING'])
+plog = PerformanceLogger(filename=f"formatting_perf_{RUN_CONFIG['CONTAINER_ID']}.log", enable_logging=RUN_CONFIG['PERFORMANCE_LOGGING'])
 
 
 DEBUG_COLUMNS = ["input_url", "final_url", "tld", "category_lv1","category_lv2","category_lv3","category_lv4",
