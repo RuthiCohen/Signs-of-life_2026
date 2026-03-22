@@ -870,11 +870,13 @@ def get_sample_filenames(url):
 
 def single_url_browser_load_visit(link):
     """Visit one url with Chrome webdriver"""
+    driver = None
+    resu = None
     try:
         if RUN_CONFIG["DEBUG_PRINT"]:
             print(f"----> START single_url_browser_load_visit {link['url']} <-------")
-        webdriver = initiate_browser_driver()
-        resu = single_url_browser_visit(link, webdriver)
+        driver = initiate_browser_driver()
+        resu = single_url_browser_visit(link, driver)
 
         # screenshot save
         if RUN_CONFIG["DO_SAMPLING"] and link['to_sample']:
@@ -908,30 +910,34 @@ def single_url_browser_load_visit(link):
                 time.sleep(1)
             '''
             for i in range(30):
-                if webdriver.execute_script("""document.onreadystatechange = function () {
+                if driver.execute_script("""document.onreadystatechange = function () {
                                                if (document.readyState == "complete") {
                                                     return "complete";
                                                 }
                                             }""") == 'complete':
                     break
                 time.sleep(1)
-            total_height = webdriver.execute_script("""
+            total_height = driver.execute_script("""
                 if (document.scrollingElement){
                     return document.scrollingElement.scrollHeight;
-                } 
+                }
                 return document.body.offsetHeight;
             """)
             max_height = RUN_CONFIG["SAMPLING_MAX_SCREENSHOT_HEIGHT_PX"]
-            webdriver.set_window_size(1200, total_height if total_height <= max_height else max_height)
-            webdriver.save_screenshot(link['ss_filename'])
+            driver.set_window_size(1200, total_height if total_height <= max_height else max_height)
+            driver.save_screenshot(link['ss_filename'])
             sam_plog.it(f"({link['url']}) | SCREENSHOT SAVED")
-
-        webdriver.quit()
 
     except Exception as e:
         print("JS error with {} of type: {} : {} --> js interpretation removed".format(link["url"], type(e), str(e)))
         # raise
         resu = None
+    finally:
+        if driver is not None:
+            try:
+                driver.quit()
+            except Exception:
+                pass
     if RUN_CONFIG["DEBUG_PRINT"]:
         print(f"----> END single_url_browser_load_visit {link['url']}. Got result: {resu is not None} <-------")
     return resu
