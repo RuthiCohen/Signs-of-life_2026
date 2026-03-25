@@ -5,6 +5,7 @@ import re
 import numpy as np
 import pandas as pd
 from os.path import join
+from pathlib import Path
 import os, sys, traceback
 from joblib import Parallel, delayed
 from tqdm import tqdm
@@ -16,7 +17,7 @@ from ml.feature_eng import Featurer, MIN_TEXT_LG
 from ml.prediction import Predictor
 from links_finder import parse_html
 from language_patterns import PATTERN_PARKED, get_unicode_set
-from url_visitor import request_full_file_target_links, request_full_file_with_browser, get_sample_filenames
+from url_visitor import request_full_file_target_links, request_full_file_with_browser, get_sample_filenames, _take_screenshot_with_new_driver
 from page_processing import get_page_displayed_text, get_page_language
 
 # LOGGING
@@ -1023,7 +1024,7 @@ def predict_parking(documents):
     plog2.perf_go(f"Performing first classification on {len(documents)} urls")
     if RUN_CONFIG["MULTI_PROCESSING"]:
         plog.it("Performing multi-processing first classification")
-        list_res = Parallel(n_jobs=RUN_CONFIG["WORKERS_POST_PROCESSING"], require='sharedmem')(
+        list_res = Parallel(n_jobs=RUN_CONFIG["WORKERS_POST_PROCESSING"])(
             delayed(single_page_classify_parking)(batch) for batch in
             tqdm(X_first))
     else:
@@ -1062,7 +1063,7 @@ def predict_parking(documents):
         # predict
         if RUN_CONFIG["MULTI_PROCESSING"]:
             plog.it("Performing multi-processing second classification")
-            list_res_second = Parallel(n_jobs=RUN_CONFIG["WORKERS_POST_PROCESSING"], require='sharedmem')(
+            list_res_second = Parallel(n_jobs=RUN_CONFIG["WORKERS_POST_PROCESSING"])(
                 delayed(single_page_classify_parking)(website) for website in tqdm(X_target_websites))
         else:
             # --non parallel
@@ -1101,7 +1102,7 @@ def predict_parking(documents):
             plog2.perf_go(f"Performing JS classification on {len(links_to_revisit_with_js)} urls")
             # predict
             if RUN_CONFIG["MULTI_PROCESSING"]:
-                list_res_js = Parallel(n_jobs=RUN_CONFIG["WORKERS_POST_PROCESSING"], require='sharedmem')(
+                list_res_js = Parallel(n_jobs=RUN_CONFIG["WORKERS_POST_PROCESSING"])(
                     delayed(single_page_classify_parking)(website) for website in tqdm(X_js_rendered_websites))
             else:
                 # --non parallel
@@ -1117,6 +1118,39 @@ def predict_parking(documents):
 
             # consolidation
             preds = consolidate_original_and_js_rendered_results(preds, preds_js)
+
+    # Take screenshots for any sampled page whose PNG is still missing — scan JSON files directly
+    if RUN_CONFIG.get("DO_SAMPLING", False):
+        sampling_folder = Path(RUN_CONFIG["SAMPLING_LOCAL_FOLDER"])
+        links_to_screenshot = []
+        for json_file in sampling_folder.glob("*.resu.*.json"):
+            try:
+                with open(json_file) as f:
+                    data = json.load(f)
+                ss_filename = data.get("ss_filename")
+                if ss_filename and not (Path(RUN_CONFIG["MAIN_DIR"]) / ss_filename).exists():
+                    links_to_screenshot.append({"url": data.get("input_url") or data.get("url", ""), "ss_filename": ss_filename})
+            except Exception:
+                pass
+        print(f"[SS DEBUG] json files scanned={len(list(sampling_folder.glob('*.resu.*.json')))} | missing png={len(links_to_screenshot)}")
+        if links_to_screenshot:
+            sam_plog.it(f"Taking screenshots for {len(links_to_screenshot)} sampled pages with missing PNG...")
+            max_retries = 3
+            for attempt in range(1, max_retries + 1):
+                remaining = [e for e in links_to_screenshot if not (Path(RUN_CONFIG["MAIN_DIR"]) / e["ss_filename"]).exists()]
+                if not remaining:
+                    break
+                sam_plog.it(f"Screenshot attempt {attempt}/{max_retries}: {len(remaining)} remaining...")
+                workers = max(1, RUN_CONFIG["WORKERS_POST_PROCESSING"] // attempt)
+                Parallel(n_jobs=workers)(
+                    delayed(_take_screenshot_with_new_driver)(link) for link in tqdm(remaining))
+            still_failed = [e for e in links_to_screenshot if not (Path(RUN_CONFIG["MAIN_DIR"]) / e["ss_filename"]).exists()]
+            if still_failed:
+                pending_file = sampling_folder / "pending_screenshots.json"
+                existing = json.load(open(pending_file)) if pending_file.exists() else []
+                with open(pending_file, 'w') as f:
+                    json.dump(existing + still_failed, f, indent=2, default=str)
+                sam_plog.it(f"{len(still_failed)} screenshots still missing — saved to {pending_file}")
 
     plog.it("doing last cleanup")
     # Remove redirection to same domain

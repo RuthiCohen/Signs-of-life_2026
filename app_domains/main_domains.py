@@ -14,7 +14,7 @@ from utils import remove_url_saved, PerformanceLogger
 import output_processing as op
 
 # steps
-from url_visitor import FileData, interpret_boolean                     # DO_REQUESTS
+from url_visitor import FileData, interpret_boolean, retry_pending_screenshots  # DO_REQUESTS
 from page_processing import get_page_displayed_text, get_page_language  # DO_PAGE_PROCESSING
 from classification_parked import predict_parking                       # DO_CONTENT_CLASSIFICATION
 from DNS_data_extraction import extract_dns_data                        # DO_DNS
@@ -565,6 +565,9 @@ def main():
         plog.it(f'sending {RUN_CONFIG["output_final_file_path"]} to output processing')
         OutputProcessing(RUN_CONFIG["output_final_file_path"])
         plog.perf_lap('Output Processing Complete')
+
+        
+        retry_pending_screenshots()
 
     plog.perf_end("Crawler Finished")
 

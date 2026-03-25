@@ -18,7 +18,10 @@ import requests
 import aiohttp
 from aiohttp import ClientSession
 import asyncpool
+import json
 from selenium import webdriver
+from selenium.common.exceptions import TimeoutException
+from PIL import Image
 import tracemalloc
 
 from config import RUN_CONFIG
@@ -757,7 +760,11 @@ def single_url_browser_visit(link, webdriver):
     webdriver.implicitly_wait(LOADING_TIME)  # wait for full loading
 
     # visit url
-    webdriver.get(full_url)
+    try:
+        webdriver.get(full_url)
+    except TimeoutException:
+        # page load timed out — stop loading and use whatever rendered so far
+        webdriver.execute_script("window.stop()")
 
     # loading timeout
     webdriver.implicitly_wait(0)
@@ -783,16 +790,217 @@ def single_url_browser_visit(link, webdriver):
     return resu
 
 
+def _wait_for_page_ready(driver, timeout=15):
+    """Wait until the page is fully loaded and visually ready before taking a screenshot."""
+    # 1. readyState complete — HTML and blocking resources parsed
+    for _ in range(timeout):
+        if driver.execute_script("return document.readyState") == 'complete':
+            break
+        time.sleep(1)
+    # 2. load event fired — all subresources (images, scripts) finished
+    for _ in range(10):
+        try:
+            if driver.execute_script("return window.performance.timing.loadEventEnd > 0"):
+                break
+        except Exception:
+            pass
+        time.sleep(1)
+    # 3. all images decoded — prevents blank image placeholders in screenshot
+    for _ in range(10):
+        try:
+            all_imgs_loaded = driver.execute_script(
+                "return Array.from(document.images).every(function(img){ return img.complete; })"
+            )
+            if all_imgs_loaded:
+                break
+        except Exception:
+            pass
+        time.sleep(1)
+    # 4. fonts loaded — unloaded fonts render as invisible/blank text
+    for _ in range(10):
+        try:
+            fonts_ready = driver.execute_script(
+                "return !document.fonts || document.fonts.status === 'loaded'"
+            )
+            if fonts_ready:
+                break
+        except Exception:
+            pass
+        time.sleep(0.5)
+    # 5. scroll down then back to top to trigger lazy-loaded images and CSS animations
+    try:
+        driver.execute_script("window.scrollTo(0, document.body.scrollHeight);")
+        time.sleep(1)
+        driver.execute_script("window.scrollTo(0, 0);")
+    except Exception:
+        pass
+    # 6. final grace period for paint after scroll
+    time.sleep(2)
+
+
+def _is_blank_screenshot(filepath):
+    """Return True if the screenshot is essentially a blank/single-color image (std dev of pixels < 8)."""
+    try:
+        img = Image.open(filepath).convert('RGB').resize((100, 100))
+        arr = np.array(img, dtype=np.float32)
+        return float(arr.std()) < 8.0
+    except Exception:
+        return False
+
+
+def _save_screenshot_if_valid(driver, ss_path, url):
+    """
+    Takes a screenshot only if the page is real content.
+    Checks (in order):
+      1. Not a Chrome error page (chrome-error://, about:)
+      2. Pixel variance — not blank/white
+    Returns True if screenshot saved successfully, False otherwise.
+    """
+    # 1. Chrome error page check — two signals combined for reliability:
+    #    a) URL-based: chrome-error:// is set when Chrome fully navigates to error page
+    #    b) DOM-based: Chrome error pages always render <div id="main-message"> regardless of URL
+    try:
+        current_url = driver.current_url
+        if current_url.startswith("chrome-error://") or current_url.startswith("about:"):
+            sam_plog.it(f"({url}) | SCREENSHOT SKIPPED — chrome error URL")
+            return False
+    except Exception:
+        pass
+    try:
+        is_error_page = driver.execute_script(
+            "var el = document.getElementById('main-message');"
+            "return el !== null && el.innerText.trim().length > 0;"
+        )
+        if is_error_page:
+            sam_plog.it(f"({url}) | SCREENSHOT SKIPPED — chrome error page (DOM check)")
+            return False
+    except Exception:
+        pass
+
+    # 2. Resize window to full page height before saving
+    try:
+        total_height = driver.execute_script("""
+            if (document.scrollingElement){ return document.scrollingElement.scrollHeight; }
+            return document.body.offsetHeight;
+        """)
+        max_height = RUN_CONFIG["SAMPLING_MAX_SCREENSHOT_HEIGHT_PX"]
+        driver.set_window_size(1200, total_height if total_height <= max_height else max_height)
+    except Exception:
+        driver.set_window_size(1200, 900)
+
+    # 3. Save
+    driver.save_screenshot(ss_path)
+
+    # 4. Blank/white check on actual saved pixels
+    if _is_blank_screenshot(ss_path):
+        try:
+            Path(ss_path).unlink()
+        except FileNotFoundError:
+            pass
+        sam_plog.it(f"({url}) | SCREENSHOT BLANK — deleted")
+        return False
+
+    return True
+
+
+def _take_screenshot_with_new_driver(link):
+    """Open a fresh driver, navigate to URL, and take a screenshot. No page data is returned."""
+    driver = None
+    try:
+        driver = initiate_browser_driver()
+        full_url = link['url'] if re.search("^https*:", link['url'], re.IGNORECASE) else "http://" + link['url']
+        page_load_ok = True
+        try:
+            driver.get(full_url)
+        except TimeoutException:
+            driver.execute_script("window.stop()")
+        except Exception as load_err:
+            sam_plog.it(f"({link['url']}) | PAGE LOAD FAILED: {load_err} — skipping screenshot")
+            page_load_ok = False
+        if page_load_ok:
+            _wait_for_page_ready(driver)
+            ss_path = str(Path(RUN_CONFIG["MAIN_DIR"]) / link['ss_filename'])
+            if _save_screenshot_if_valid(driver, ss_path, link['url']):
+                sam_plog.it(f"({link['url']}) | SCREENSHOT SAVED (retry)")
+    except Exception as e:
+        sam_plog.it(f"({link['url']}) | SCREENSHOT RETRY FAILED: {e}")
+    finally:
+        if driver is not None:
+            try:
+                driver.quit()
+            except Exception:
+                pass
+
+
 def request_full_file_with_browser(links):
     """Visit a list of URLs with Chrome webdriver"""
     # visiting links
-    all_resu = []
     all_resu = Parallel(n_jobs=RUN_CONFIG["WORKERS_POST_PROCESSING"])(
         delayed(single_url_browser_load_visit)(link) for link in tqdm(links))
 
     all_resu = [e for e in all_resu if (e is not None)]
 
+    # retry screenshots that were not saved during the main run (up to 3 attempts)
+    if RUN_CONFIG["DO_SAMPLING"]:
+        max_retries = 3
+        for attempt in range(1, max_retries + 1):
+            failed_ss = [link for link in links if link.get('to_sample') and not (Path(RUN_CONFIG["MAIN_DIR"]) / link['ss_filename']).exists()]
+            if not failed_ss:
+                break
+            sam_plog.it(f"Retrying {len(failed_ss)} failed screenshots (attempt {attempt}/{max_retries})...")
+            workers = max(1, RUN_CONFIG["WORKERS_POST_PROCESSING"] // (attempt + 1))
+            Parallel(n_jobs=workers)(
+                delayed(_take_screenshot_with_new_driver)(link) for link in tqdm(failed_ss))
+
+        # after all retries, persist any still-missing screenshots to a file for manual re-run
+        still_failed = [link for link in links if link.get('to_sample') and not (Path(RUN_CONFIG["MAIN_DIR"]) / link['ss_filename']).exists()]
+        if still_failed:
+            pending_file = Path(RUN_CONFIG["SAMPLING_LOCAL_FOLDER"]) / "pending_screenshots.json"
+            with open(pending_file, 'w') as f:
+                json.dump(still_failed, f, indent=2, default=str)
+            sam_plog.it(f"{len(still_failed)} screenshots still missing — saved to {pending_file}")
+
     return all_resu
+
+
+def retry_pending_screenshots():
+    """Re-run screenshots that failed during a previous run (reads pending_screenshots.json)."""
+    pending_file = Path(RUN_CONFIG["SAMPLING_LOCAL_FOLDER"]) / "pending_screenshots.json"
+    if not pending_file.exists():
+        print("No pending_screenshots.json found — nothing to retry.")
+        return
+
+    with open(pending_file) as f:
+        links = json.load(f)
+
+    main_dir = Path(RUN_CONFIG["MAIN_DIR"])
+
+    # filter out any that were already saved since last run
+    links = [l for l in links if not (main_dir / l['ss_filename']).exists()]
+    if not links:
+        print("All pending screenshots already exist — nothing to retry.")
+        pending_file.unlink()
+        return
+
+    print(f"Retrying {len(links)} pending screenshots...")
+    max_retries = 3
+    for attempt in range(1, max_retries + 1):
+        remaining = [l for l in links if not (main_dir / l['ss_filename']).exists()]
+        if not remaining:
+            break
+        print(f"  Attempt {attempt}/{max_retries}: {len(remaining)} remaining...")
+        workers = max(1, RUN_CONFIG["WORKERS_POST_PROCESSING"] // (attempt + 1))
+        Parallel(n_jobs=workers)(
+            delayed(_take_screenshot_with_new_driver)(l) for l in tqdm(remaining))
+
+    still_failed = [l for l in links if not (main_dir / l['ss_filename']).exists()]
+    if still_failed:
+        with open(pending_file, 'w') as f:
+            json.dump(still_failed, f, indent=2, default=str)
+        print(f"{len(still_failed)} screenshots still failed — pending_screenshots.json updated.")
+    else:
+        pending_file.unlink()
+        print("All pending screenshots saved successfully.")
 
 
 '''
@@ -875,58 +1083,23 @@ def single_url_browser_load_visit(link):
     try:
         if RUN_CONFIG["DEBUG_PRINT"]:
             print(f"----> START single_url_browser_load_visit {link['url']} <-------")
-        driver = initiate_browser_driver()
+        try:
+            driver = initiate_browser_driver()
+        except Exception as e:
+            print(f"First driver init failed for {link['url']}: {e} — retrying once")
+            driver = initiate_browser_driver()
         resu = single_url_browser_visit(link, driver)
 
-        # screenshot save
-        if RUN_CONFIG["DO_SAMPLING"] and link['to_sample']:
+        # screenshot save — only if the page actually loaded (resu is None means JS/load error)
+        if RUN_CONFIG["DO_SAMPLING"] and link['to_sample'] and resu is not None:
             sam_plog.it(f"({link['url']}) | PREPARING FOR SCREENSHOT : {link['ss_filename']}")
-            '''
-            # use a scrolling trick to make sure page has fully loaded before taking the screenshot (so we don't get an empty page)
-            driver.execute_script("""
-                (function () {
-                    var y = 0;
-                    var step = 100;
-                    window.scroll(0, 0);
-
-                    function f() {
-                        if (y < document.body.scrollHeight) {
-                            y += step;
-                            window.scroll(0, y);
-                            setTimeout(f, 100);
-                        } else {
-                            window.scroll(0, 0);
-                            document.title += "scroll-done";
-                        }
-                    }
-
-                    setTimeout(f, 1000);
-                })();
-            """)
-
-            for i in range(30):
-                if "scroll-done" in driver.title:
-                    break
-                time.sleep(1)
-            '''
-            for i in range(30):
-                if driver.execute_script("""document.onreadystatechange = function () {
-                                               if (document.readyState == "complete") {
-                                                    return "complete";
-                                                }
-                                            }""") == 'complete':
-                    break
-                time.sleep(1)
-            total_height = driver.execute_script("""
-                if (document.scrollingElement){
-                    return document.scrollingElement.scrollHeight;
-                }
-                return document.body.offsetHeight;
-            """)
-            max_height = RUN_CONFIG["SAMPLING_MAX_SCREENSHOT_HEIGHT_PX"]
-            driver.set_window_size(1200, total_height if total_height <= max_height else max_height)
-            driver.save_screenshot(link['ss_filename'])
-            sam_plog.it(f"({link['url']}) | SCREENSHOT SAVED")
+            try:
+                _wait_for_page_ready(driver, timeout=30)
+                ss_path = str(Path(RUN_CONFIG["MAIN_DIR"]) / link['ss_filename'])
+                if _save_screenshot_if_valid(driver, ss_path, link['url']):
+                    sam_plog.it(f"({link['url']}) | SCREENSHOT SAVED")
+            except Exception as e:
+                sam_plog.it(f"({link['url']}) | SCREENSHOT FAILED: {e}")
 
     except Exception as e:
         print("JS error with {} of type: {} : {} --> js interpretation removed".format(link["url"], type(e), str(e)))
@@ -958,5 +1131,6 @@ def initiate_browser_driver():
     # launch Chrome
     driver = webdriver.Chrome(chrome_options=options)
     # loading timeout
+    driver.set_page_load_timeout(LOADING_TIME)  # stop waiting for page load after N seconds
     driver.implicitly_wait(LOADING_TIME)  # wait for full loading
     return driver
