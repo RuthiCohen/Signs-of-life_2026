@@ -1118,19 +1118,25 @@ def single_url_browser_load_visit(link):
 
 def initiate_browser_driver():
     """Open a Browser session"""
-    # options
     options = webdriver.ChromeOptions()
     options.add_argument('--no-sandbox')
     options.add_argument('--disable-dev-shm-usage')
-    options.add_argument('headless')
-    options.add_argument("disable-extensions")
-    options.add_argument('silent')
-    options.add_argument('window-size=1200x600')
-    options.add_argument(f'user-agent={USER_AGENT}')
-    # options.add_argument("--incognito")
+    options.add_argument('--headless=new')           # new headless mode — less detectable than old 'headless'
+    options.add_argument('--disable-extensions')
+    options.add_argument('--log-level=3')            # suppress Chrome console noise
+    options.add_argument('--window-size=1200,600')
+    options.add_argument(f'--user-agent={USER_AGENT}')
+    # hide automation fingerprints so sites don't serve blank pages to bots
+    options.add_argument('--disable-blink-features=AutomationControlled')
+    options.add_experimental_option('excludeSwitches', ['enable-automation'])
+    options.add_experimental_option('useAutomationExtension', False)
     # launch Chrome
     driver = webdriver.Chrome(chrome_options=options)
+    # hide navigator.webdriver property (another bot detection signal)
+    driver.execute_cdp_cmd('Page.addScriptToEvaluateOnNewDocument', {
+        'source': 'Object.defineProperty(navigator, "webdriver", {get: () => undefined})'
+    })
     # loading timeout
-    driver.set_page_load_timeout(LOADING_TIME)  # stop waiting for page load after N seconds
-    driver.implicitly_wait(LOADING_TIME)  # wait for full loading
+    driver.set_page_load_timeout(LOADING_TIME)
+    driver.implicitly_wait(LOADING_TIME)
     return driver

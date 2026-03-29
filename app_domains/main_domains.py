@@ -249,6 +249,13 @@ def main():
         plog.perf_lap("Starting on new file: " + f)
         plog.it("\ninput_file: {}\noutput_file: {}".format(input_path, output_path))
 
+        # Set sampling folder to output/sampling/{filename}_{container_id}/
+        if RUN_CONFIG.get("DO_SAMPLING", False):
+            sampling_subfolder = join(MAIN_DIR, "output", "sampling", f"{f}_{RUN_CONFIG['CONTAINER_ID']}")
+            os.makedirs(sampling_subfolder, exist_ok=True)
+            RUN_CONFIG["SAMPLING_LOCAL_FOLDER"] = sampling_subfolder
+            os.environ["SAMPLING_LOCAL_FOLDER"] = sampling_subfolder  # inherited by spawned joblib workers
+
         # Main class
         ctl = Controller(f)
         if RUN_CONFIG["DO_REQUESTS"]:
