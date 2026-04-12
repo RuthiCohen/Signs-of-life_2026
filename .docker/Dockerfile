@@ -50,5 +50,7 @@ RUN cd env_required/word_forms-master/ && python setup.py install
 COPY .docker/setup_tok_models.py /signs-of-life/setup_tok_models.py
 RUN python -u /signs-of-life/setup_tok_models.py
 
+COPY app_domains /signs-of-life/
+
 #ENTRYPOINT ["tail", "-f", "/dev/null"]
 CMD ["sh", "entrypoint.sh"]

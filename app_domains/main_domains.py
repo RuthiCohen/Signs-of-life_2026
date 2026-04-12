@@ -2,6 +2,8 @@
 Set the configuration parameters in config.py before running it
 """
 import re
+import gc
+import psutil
 import pandas as pd
 import numpy as np
 import os
@@ -30,6 +32,13 @@ loggers = loggers + [logging.getLogger(name) for name in logging.root.manager.lo
 for log in loggers:
     log.setLevel(logging.WARNING)
 plog = PerformanceLogger(filename=f"main_perf_{RUN_CONFIG['CONTAINER_ID']}.log", enable_logging=RUN_CONFIG['PERFORMANCE_LOGGING'])
+
+def _mem():
+    """Return a string with current process RSS and system available RAM in MB."""
+    proc_mb = psutil.Process().memory_info().rss / (1024 * 1024)
+    avail_mb = psutil.virtual_memory().available / (1024 * 1024)
+    return f"[MEM proc={proc_mb:.0f}MB avail={avail_mb:.0f}MB]"
+
 
 EXPECTED_ORDER = ["url", "ind_non_schema", "pred_is_parked", "is_error", "comment", "is_redirected",
                   "redirection_type", "is_redirected_different_domain",
@@ -526,6 +535,9 @@ def main():
         # delete url pickles
         remove_url_saved(RUN_CONFIG["PATH_URL_SAVE"])
         plog.perf_lap('Deleted Pickles')
+        del ctl
+        gc.collect()
+        print(f"{_mem()} after del ctl + gc.collect")
 
         # concat results
         plog.it("Starting Concatenation")
@@ -599,3 +611,6 @@ if __name__ == '__main__':
     tic_tic2 = time.time()
     printAllDone()
     plog.it("Total time in seconds (main): {}".format(tic_tic2 - tic_tic))
+    print("Started at: ", time.ctime(tic_tic), "Finished at: ", time.ctime(tic_tic2))
+
+

@@ -32,13 +32,16 @@ from status_codes import HTTP_STATUS
 from joblib import Parallel, delayed
 from utils import PerformanceLogger
 
-# import psutil
+import psutil
 PREF_HDRS = "fx_hdr_"
 PREF_COOK = "fx_cks_"
 PREF_JS = "fx_jsc_"
 CL_HDRS = "headers"
 CL_COOKS = "cookies"
 SUSPICIOUS_COLS = ["kw_park_notice"]  # kw_park_notice may contain other languages
+#
+_MEM_THROTTLE_MIN_FREE_MB = 500   # pause Chrome launches below this free RAM threshold
+_MEM_THROTTLE_WAIT_S = 5          # seconds to wait between checks when throttling
 
 # Attempt UVLOOP setup
 try:
@@ -763,8 +766,14 @@ def single_url_browser_visit(link, webdriver):
     try:
         webdriver.get(full_url)
     except TimeoutException:
-        # page load timed out — stop loading and use whatever rendered so far
-        webdriver.execute_script("window.stop()")
+        try:
+            webdriver.execute_script("window.stop()")
+        except Exception:
+            pass
+    except Exception as e:
+        resu.comment = f"PAGE LOAD FAILED: {e}"
+        resu.is_error = True
+        return resu
 
     # loading timeout
     webdriver.implicitly_wait(0)
@@ -909,19 +918,36 @@ def _take_screenshot_with_new_driver(link):
     try:
         driver = initiate_browser_driver()
         full_url = link['url'] if re.search("^https*:", link['url'], re.IGNORECASE) else "http://" + link['url']
-        page_load_ok = True
+
         try:
             driver.get(full_url)
         except TimeoutException:
-            driver.execute_script("window.stop()")
+            sam_plog.it(f"({link['url']}) | PAGE LOAD TIMEOUT — stopping load and continuing")
+            try:
+                driver.execute_script("window.stop()")
+            except Exception:
+                pass
         except Exception as load_err:
             sam_plog.it(f"({link['url']}) | PAGE LOAD FAILED: {load_err} — skipping screenshot")
-            page_load_ok = False
-        if page_load_ok:
-            _wait_for_page_ready(driver)
-            ss_path = str(Path(RUN_CONFIG["MAIN_DIR"]) / link['ss_filename'])
+            return
+
+        try:
+            _wait_for_page_ready(driver, timeout=15)
+        except TimeoutException as wait_err:
+            sam_plog.it(f"({link['url']}) | PAGE READY TIMEOUT: {wait_err} — continuing to screenshot anyway")
+        except Exception as wait_err:
+            sam_plog.it(f"({link['url']}) | PAGE READY FAILED: {wait_err} — continuing to screenshot anyway")
+
+        ss_path = str(Path(RUN_CONFIG["MAIN_DIR"]) / link['ss_filename'])
+
+        try:
             if _save_screenshot_if_valid(driver, ss_path, link['url']):
                 sam_plog.it(f"({link['url']}) | SCREENSHOT SAVED (retry)")
+        except TimeoutException as ss_err:
+            sam_plog.it(f"({link['url']}) | SCREENSHOT SAVE TIMEOUT: {ss_err}")
+        except Exception as ss_err:
+            sam_plog.it(f"({link['url']}) | SCREENSHOT SAVE FAILED: {ss_err}")
+
     except Exception as e:
         sam_plog.it(f"({link['url']}) | SCREENSHOT RETRY FAILED: {e}")
     finally:
@@ -940,17 +966,21 @@ def request_full_file_with_browser(links):
 
     all_resu = [e for e in all_resu if (e is not None)]
 
-    # retry screenshots that were not saved during the main run (up to 3 attempts)
+    # Retry screenshots that were not saved during the main run (single retry)
     if RUN_CONFIG["DO_SAMPLING"]:
-        max_retries = 3
-        for attempt in range(1, max_retries + 1):
-            failed_ss = [link for link in links if link.get('to_sample') and not (Path(RUN_CONFIG["MAIN_DIR"]) / link['ss_filename']).exists()]
-            if not failed_ss:
-                break
-            sam_plog.it(f"Retrying {len(failed_ss)} failed screenshots (attempt {attempt}/{max_retries})...")
-            workers = max(1, RUN_CONFIG["WORKERS_POST_PROCESSING"] // (attempt + 1))
+        failed_ss = [
+            link for link in links
+            if link.get('to_sample') and not (Path(RUN_CONFIG["MAIN_DIR"]) / link['ss_filename']).exists()
+        ]
+
+        if failed_ss:
+            sam_plog.it(f"RETRY 1: Retrying {len(failed_ss)} failed screenshots...")
+
+            workers = max(1, RUN_CONFIG["WORKERS_POST_PROCESSING"] // 2)
             Parallel(n_jobs=workers)(
-                delayed(_take_screenshot_with_new_driver)(link) for link in tqdm(failed_ss))
+                delayed(_take_screenshot_with_new_driver)(link)
+                for link in tqdm(failed_ss)
+            )
 
         # after all retries, persist any still-missing screenshots to a file for manual re-run
         still_failed = [link for link in links if link.get('to_sample') and not (Path(RUN_CONFIG["MAIN_DIR"]) / link['ss_filename']).exists()]
@@ -975,23 +1005,17 @@ def retry_pending_screenshots():
 
     main_dir = Path(RUN_CONFIG["MAIN_DIR"])
 
-    # filter out any that were already saved since last run
     links = [l for l in links if not (main_dir / l['ss_filename']).exists()]
     if not links:
         print("All pending screenshots already exist — nothing to retry.")
         pending_file.unlink()
         return
 
-    print(f"Retrying {len(links)} pending screenshots...")
-    max_retries = 3
-    for attempt in range(1, max_retries + 1):
-        remaining = [l for l in links if not (main_dir / l['ss_filename']).exists()]
-        if not remaining:
-            break
-        print(f"  Attempt {attempt}/{max_retries}: {len(remaining)} remaining...")
-        workers = max(1, RUN_CONFIG["WORKERS_POST_PROCESSING"] // (attempt + 1))
-        Parallel(n_jobs=workers)(
-            delayed(_take_screenshot_with_new_driver)(l) for l in tqdm(remaining))
+    print(f"RETRY 1: Retrying {len(links)} pending screenshots.")
+    workers = max(1, RUN_CONFIG["WORKERS_POST_PROCESSING"] // 2)
+    Parallel(n_jobs=workers)(
+        delayed(_take_screenshot_with_new_driver)(l) for l in tqdm(links)
+    )
 
     still_failed = [l for l in links if not (main_dir / l['ss_filename']).exists()]
     if still_failed:
@@ -1076,6 +1100,17 @@ def get_sample_filenames(url):
     return (ss_filename.as_posix(), raw_filename.as_posix(), clean_filename.as_posix(), json_filename.as_posix())
 
 
+def _wait_for_free_memory(min_free_mb=_MEM_THROTTLE_MIN_FREE_MB):
+    """Block until the system has at least min_free_mb of free+available RAM."""
+    while True:
+        mem = psutil.virtual_memory()
+        available_mb = mem.available / (1024 * 1024)
+        if available_mb >= min_free_mb:
+            return
+        print(f"[MEM THROTTLE] only {available_mb:.0f} MB available — waiting {_MEM_THROTTLE_WAIT_S}s before Chrome launch")
+        time.sleep(_MEM_THROTTLE_WAIT_S)
+
+
 def single_url_browser_load_visit(link):
     """Visit one url with Chrome webdriver"""
     driver = None
@@ -1119,19 +1154,42 @@ def single_url_browser_load_visit(link):
 def initiate_browser_driver():
     """Open a Browser session"""
     options = webdriver.ChromeOptions()
+    options.page_load_strategy = 'eager'
     options.add_argument('--no-sandbox')
     options.add_argument('--disable-dev-shm-usage')
     options.add_argument('--headless=new')           # new headless mode — less detectable than old 'headless'
     options.add_argument('--disable-extensions')
     options.add_argument('--log-level=3')            # suppress Chrome console noise
     options.add_argument('--window-size=1200,600')
+
+    #### Additions - Start
+    options.add_argument('--disable-gpu')
+    options.add_argument('--disable-software-rasterizer')
+    options.add_argument('--disable-background-networking')
+    options.add_argument('--disable-default-apps')
+    options.add_argument('--disable-sync')
+    options.add_argument('--disable-translate')
+    options.add_argument('--hide-scrollbars')
+    options.add_argument('--metrics-recording-only')
+    options.add_argument('--mute-audio')
+    options.add_argument('--no-first-run')
+    options.add_argument('--safebrowsing-disable-auto-update')
+    options.add_argument('--js-flags=--max-old-space-size=128')  # cap V8 heap to 128 MB per tab
+    #### Additions - End
+
+    # ignore SSL / certificate issues
+    options.set_capability("acceptInsecureCerts", True)
+    options.add_argument('--ignore-certificate-errors')
+    options.add_argument('--ignore-ssl-errors')
+
     options.add_argument(f'--user-agent={USER_AGENT}')
     # hide automation fingerprints so sites don't serve blank pages to bots
     options.add_argument('--disable-blink-features=AutomationControlled')
     options.add_experimental_option('excludeSwitches', ['enable-automation'])
     options.add_experimental_option('useAutomationExtension', False)
     # launch Chrome
-    driver = webdriver.Chrome(chrome_options=options)
+    driver = webdriver.Chrome(options=options)
+
     # hide navigator.webdriver property (another bot detection signal)
     driver.execute_cdp_cmd('Page.addScriptToEvaluateOnNewDocument', {
         'source': 'Object.defineProperty(navigator, "webdriver", {get: () => undefined})'
