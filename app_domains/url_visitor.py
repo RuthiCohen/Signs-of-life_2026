@@ -21,6 +21,7 @@ import asyncpool
 import json
 from selenium import webdriver
 from selenium.common.exceptions import TimeoutException
+from selenium.webdriver.remote.remote_connection import RemoteConnection
 from PIL import Image
 import tracemalloc
 
@@ -973,13 +974,15 @@ def request_full_file_with_browser(links):
             if link.get('to_sample') and not (Path(RUN_CONFIG["MAIN_DIR"]) / link['ss_filename']).exists()
         ]
 
+        _MAX_RETRY = 10
         if failed_ss:
-            sam_plog.it(f"RETRY 1: Retrying {len(failed_ss)} failed screenshots...")
+            retry_ss = failed_ss[:_MAX_RETRY]
+            sam_plog.it(f"RETRY 1: Retrying {len(retry_ss)}/{len(failed_ss)} failed screenshots...")
 
             workers = max(1, RUN_CONFIG["WORKERS_POST_PROCESSING"] // 2)
             Parallel(n_jobs=workers)(
                 delayed(_take_screenshot_with_new_driver)(link)
-                for link in tqdm(failed_ss)
+                for link in tqdm(retry_ss)
             )
 
         # after all retries, persist any still-missing screenshots to a file for manual re-run
@@ -1129,7 +1132,7 @@ def single_url_browser_load_visit(link):
         if RUN_CONFIG["DO_SAMPLING"] and link['to_sample'] and resu is not None:
             sam_plog.it(f"({link['url']}) | PREPARING FOR SCREENSHOT : {link['ss_filename']}")
             try:
-                _wait_for_page_ready(driver, timeout=30)
+                _wait_for_page_ready(driver, timeout=10)
                 ss_path = str(Path(RUN_CONFIG["MAIN_DIR"]) / link['ss_filename'])
                 if _save_screenshot_if_valid(driver, ss_path, link['url']):
                     sam_plog.it(f"({link['url']}) | SCREENSHOT SAVED")
@@ -1153,6 +1156,8 @@ def single_url_browser_load_visit(link):
 
 def initiate_browser_driver():
     """Open a Browser session"""
+    # Bound every ChromeDriver socket call so a frozen Chrome can't block a worker forever.
+    RemoteConnection.set_timeout(25)
     options = webdriver.ChromeOptions()
     options.page_load_strategy = 'eager'
     options.add_argument('--no-sandbox')
@@ -1197,4 +1202,5 @@ def initiate_browser_driver():
     # loading timeout
     driver.set_page_load_timeout(LOADING_TIME)
     driver.implicitly_wait(LOADING_TIME)
+    driver.set_script_timeout(20)
     return driver
