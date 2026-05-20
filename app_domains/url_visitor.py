@@ -21,7 +21,6 @@ import asyncpool
 import json
 from selenium import webdriver
 from selenium.common.exceptions import TimeoutException
-from selenium.webdriver.remote.remote_connection import RemoteConnection
 from PIL import Image
 import tracemalloc
 
@@ -802,49 +801,53 @@ def single_url_browser_visit(link, webdriver):
 
 def _wait_for_page_ready(driver, timeout=15):
     """Wait until the page is fully loaded and visually ready before taking a screenshot."""
-    # 1. readyState complete — HTML and blocking resources parsed
-    for _ in range(timeout):
-        if driver.execute_script("return document.readyState") == 'complete':
-            break
-        time.sleep(1)
-    # 2. load event fired — all subresources (images, scripts) finished
-    for _ in range(10):
+    try:
+        driver.set_script_timeout(5)  # cap each execute_script at 5s so loops can't stall
+    except Exception:
+        pass
+
+    deadline = time.monotonic() + timeout
+
+    # 1. readyState complete
+    while time.monotonic() < deadline:
         try:
-            if driver.execute_script("return window.performance.timing.loadEventEnd > 0"):
+            if driver.execute_script("return document.readyState") == 'complete':
                 break
         except Exception:
             pass
         time.sleep(1)
-    # 3. all images decoded — prevents blank image placeholders in screenshot
-    for _ in range(10):
+
+    # 2. all images decoded — prevents blank image placeholders
+    while time.monotonic() < deadline:
         try:
-            all_imgs_loaded = driver.execute_script(
+            if driver.execute_script(
                 "return Array.from(document.images).every(function(img){ return img.complete; })"
-            )
-            if all_imgs_loaded:
+            ):
                 break
         except Exception:
             pass
         time.sleep(1)
-    # 4. fonts loaded — unloaded fonts render as invisible/blank text
-    for _ in range(10):
+
+    # 3. fonts loaded — unloaded fonts render as invisible/blank text
+    while time.monotonic() < deadline:
         try:
-            fonts_ready = driver.execute_script(
+            if driver.execute_script(
                 "return !document.fonts || document.fonts.status === 'loaded'"
-            )
-            if fonts_ready:
+            ):
                 break
         except Exception:
             pass
         time.sleep(0.5)
-    # 5. scroll down then back to top to trigger lazy-loaded images and CSS animations
+
+    # 4. scroll to trigger lazy-loaded images, then back to top
     try:
         driver.execute_script("window.scrollTo(0, document.body.scrollHeight);")
         time.sleep(1)
         driver.execute_script("window.scrollTo(0, 0);")
     except Exception:
         pass
-    # 6. final grace period for paint after scroll
+
+    # 5. final grace period for paint
     time.sleep(2)
 
 
@@ -974,15 +977,13 @@ def request_full_file_with_browser(links):
             if link.get('to_sample') and not (Path(RUN_CONFIG["MAIN_DIR"]) / link['ss_filename']).exists()
         ]
 
-        _MAX_RETRY = 10
         if failed_ss:
-            retry_ss = failed_ss[:_MAX_RETRY]
-            sam_plog.it(f"RETRY 1: Retrying {len(retry_ss)}/{len(failed_ss)} failed screenshots...")
+            sam_plog.it(f"RETRY 1: Retrying {len(failed_ss)} failed screenshots...")
 
             workers = max(1, RUN_CONFIG["WORKERS_POST_PROCESSING"] // 2)
             Parallel(n_jobs=workers)(
                 delayed(_take_screenshot_with_new_driver)(link)
-                for link in tqdm(retry_ss)
+                for link in tqdm(failed_ss)
             )
 
         # after all retries, persist any still-missing screenshots to a file for manual re-run
@@ -1103,12 +1104,16 @@ def get_sample_filenames(url):
     return (ss_filename.as_posix(), raw_filename.as_posix(), clean_filename.as_posix(), json_filename.as_posix())
 
 
-def _wait_for_free_memory(min_free_mb=_MEM_THROTTLE_MIN_FREE_MB):
-    """Block until the system has at least min_free_mb of free+available RAM."""
+def _wait_for_free_memory(min_free_mb=_MEM_THROTTLE_MIN_FREE_MB, max_wait_s=120):
+    """Block until the system has at least min_free_mb of free RAM, or max_wait_s elapses."""
+    deadline = time.monotonic() + max_wait_s
     while True:
         mem = psutil.virtual_memory()
         available_mb = mem.available / (1024 * 1024)
         if available_mb >= min_free_mb:
+            return
+        if time.monotonic() >= deadline:
+            print(f"[MEM THROTTLE] timeout after {max_wait_s}s — proceeding with {available_mb:.0f} MB available")
             return
         print(f"[MEM THROTTLE] only {available_mb:.0f} MB available — waiting {_MEM_THROTTLE_WAIT_S}s before Chrome launch")
         time.sleep(_MEM_THROTTLE_WAIT_S)
@@ -1132,7 +1137,7 @@ def single_url_browser_load_visit(link):
         if RUN_CONFIG["DO_SAMPLING"] and link['to_sample'] and resu is not None:
             sam_plog.it(f"({link['url']}) | PREPARING FOR SCREENSHOT : {link['ss_filename']}")
             try:
-                _wait_for_page_ready(driver, timeout=10)
+                _wait_for_page_ready(driver, timeout=30)
                 ss_path = str(Path(RUN_CONFIG["MAIN_DIR"]) / link['ss_filename'])
                 if _save_screenshot_if_valid(driver, ss_path, link['url']):
                     sam_plog.it(f"({link['url']}) | SCREENSHOT SAVED")
@@ -1156,10 +1161,8 @@ def single_url_browser_load_visit(link):
 
 def initiate_browser_driver():
     """Open a Browser session"""
-    # Bound every ChromeDriver socket call so a frozen Chrome can't block a worker forever.
-    RemoteConnection.set_timeout(25)
     options = webdriver.ChromeOptions()
-    options.page_load_strategy = 'eager'
+    options.page_load_strategy = 'normal'
     options.add_argument('--no-sandbox')
     options.add_argument('--disable-dev-shm-usage')
     options.add_argument('--headless=new')           # new headless mode — less detectable than old 'headless'
@@ -1169,7 +1172,6 @@ def initiate_browser_driver():
 
     #### Additions - Start
     options.add_argument('--disable-gpu')
-    options.add_argument('--disable-software-rasterizer')
     options.add_argument('--disable-background-networking')
     options.add_argument('--disable-default-apps')
     options.add_argument('--disable-sync')
@@ -1202,5 +1204,4 @@ def initiate_browser_driver():
     # loading timeout
     driver.set_page_load_timeout(LOADING_TIME)
     driver.implicitly_wait(LOADING_TIME)
-    driver.set_script_timeout(20)
     return driver

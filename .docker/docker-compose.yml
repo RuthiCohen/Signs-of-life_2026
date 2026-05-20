@@ -4,7 +4,10 @@ services:
 #    platform: linux/amd64
     # static build
     # image: docker-crawler:${TAG_VERSION:-latest}
-    image: docker-crawler:v1.1.4_20260519
+
+    # image: docker-crawler:v1.1.4_20260519
+    image: docker-crawler:v1.1.6_20260520
+    
       #image: docker-crawler:v1.1.3_20260518
     #    image: docker-crawler:latest
     # dev version build
@@ -46,8 +49,8 @@ services:
     restart: unless-stopped
   # Crawler - No Screenshoots
   crawler_no-screenshoots:
-    # image: docker-crawler:v1.1.3_20260518
-    image: docker-crawler:v1.1.4_20260519
+    # image: docker-crawler:v1.1.4_20260519
+    image: docker-crawler:v1.1.6_20260520
     volumes:
       - ../input:/signs-of-life/input
       - ./docker_volumes/crawler/logging:/signs-of-life/logging
