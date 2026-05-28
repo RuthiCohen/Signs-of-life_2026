@@ -37,6 +37,8 @@ def extract_dns(feats):
     resolver = reso.Resolver()
     resolver.use_edns(0,dns.flags.DO,4096)
     resolver.nameservers = ([RUN_CONFIG["RESOLVER_NAMESERVER"]])
+    resolver.timeout = 2.0
+    resolver.lifetime = 5.0
     rdtype = dns.rdatatype.DNSKEY
     rdclass = dns.rdataclass.IN
 
