@@ -2,7 +2,6 @@
 
 import re
 import socket
-from tqdm import tqdm
 import pandas as pd
 import numpy as np
 import os
@@ -22,15 +21,14 @@ import json
 from selenium import webdriver
 from selenium.common.exceptions import TimeoutException
 from PIL import Image
-import tracemalloc
 
 from config import RUN_CONFIG
 from ref_headers_cookies_js import SET_ALL_CONSIDERED_HDS, SET_ALL_CONSIDERED_CKS
-from utils import save_obj, load_obj, gather_url_saved, remove_url_saved, convert_idna, is_str_full_digit, \
-    normalize_hcj_value
+from utils import save_obj, load_obj, gather_url_saved, gather_url_status, remove_url_saved, convert_idna, \
+    is_str_full_digit, normalize_hcj_value
 from status_codes import HTTP_STATUS
-from joblib import Parallel, delayed
 from utils import PerformanceLogger
+from memory_guard import AdaptiveAsyncLimiter, run_adaptive, adaptive_parallel
 
 import psutil
 PREF_HDRS = "fx_hdr_"
@@ -66,7 +64,6 @@ main_plog = PerformanceLogger(filepath=join(RUN_CONFIG["MAIN_DIR"], "logging"), 
                               enable_logging=RUN_CONFIG['PERFORMANCE_LOGGING'])
 sam_plog = PerformanceLogger(filepath=join(RUN_CONFIG["MAIN_DIR"], "logging"), filename=f"sam_p_{RUN_CONFIG['CONTAINER_ID']}.log",
                              enable_logging=RUN_CONFIG['PERFORMANCE_LOGGING'])
-tracemalloc.start()
 
 
 class RateLimiter:
@@ -301,6 +298,9 @@ class FileData:
         :param force_new: If True, any website already visited will be overwritten
         :return: save HTML pages in self.documents
         """
+        # free the previous round documents (raw html of the whole chunk) before visiting again
+        self.documents = []
+
         # All urls
         df = self.initial_table
         ind_valid_schema = df["ind_non_schema"] != False
@@ -321,14 +321,11 @@ class FileData:
                 list_dict_unique = [e for e in list_dict_unique if (e["url"] not in url_alr.keys())]
             l_2 = len(list_dict_unique)
 
-            # Reuse urls already done in a former run at  URL level
-            list_existing_url = [dico_to_website(d) for d in gather_url_saved(RUN_CONFIG["PATH_URL_SAVE"])]
-            if len(list_existing_url) > 0:
-                url_alr = dict()
-                for e in list_existing_url:
-                    if not e.to_revisit:
-                        url_alr[e.url] = 1
-                list_dict_unique = [e for e in list_dict_unique if (e["url"] not in url_alr.keys())]
+            # Reuse urls already done in a former run at  URL level (only url + to_revisit are loaded, not the html)
+            url_status = gather_url_status(RUN_CONFIG["PATH_URL_SAVE"])
+            if len(url_status) > 0:
+                url_alr = {url for url, to_revisit in url_status.items() if not to_revisit}
+                list_dict_unique = [e for e in list_dict_unique if (e["url"] not in url_alr)]
             l_3 = len(list_dict_unique)
 
             print("Total urls in file : {}".format(l_1))
@@ -349,10 +346,11 @@ class FileData:
             print("debug MINUTES_TO_TIMEOUT : " + str(RUN_CONFIG["MINUTES_TO_TIMEOUT"]))
 
             # Multi process/Mono process asynchronous
+            # the number of running processes and of async workers per process follow the memory usage
             tt = time.time()
             if RUN_CONFIG["MULTI_PROCESSING"]:
-                Parallel(n_jobs=RUN_CONFIG["MAX_PROCESSES"])(
-                    delayed(async_url_batch_visit)(batch, do_sampling=True) for batch in url_batches)
+                run_adaptive(async_url_batch_visit, url_batches, key="MAX_PROCESSES", phase="requests",
+                             dynamic_kwargs={"max_workers": "MAX_WORKERS"}, do_sampling=True)
             else:
                 async_url_batch_visit(list_dict_unique, do_sampling=True)
 
@@ -445,10 +443,10 @@ class FileData:
         req_plog.perf_end("Finished")
 
 
-def async_url_batch_visit(partial_dict_unique, do_sampling=False):
+def async_url_batch_visit(partial_dict_unique, do_sampling=False, max_workers=None):
     """ Start Asynchronous loop"""
     loop = asyncio.new_event_loop()
-    loop.run_until_complete(main_async_batch_visit(partial_dict_unique, loop, do_sampling))
+    loop.run_until_complete(main_async_batch_visit(partial_dict_unique, loop, do_sampling, max_workers))
     if RUN_CONFIG.get("DO_SAMPLING", False):
         sample_links = [d for d in partial_dict_unique if d.get("to_sample")]
         if sample_links:
@@ -460,8 +458,13 @@ def async_url_batch_visit(partial_dict_unique, do_sampling=False):
     loop.close()
 
 
-async def main_async_batch_visit(dict_unique, loop, do_sampling):
+async def main_async_batch_visit(dict_unique, loop, do_sampling, max_workers=None):
     """ Launch pool of asynchronous requests"""
+    # MAX_WORKERS coroutines are started, but only limiter.limit of them run a request at the same time:
+    # the limit goes down/up with the memory usage
+    limiter = AdaptiveAsyncLimiter(max_workers or RUN_CONFIG["MAX_WORKERS"])
+    monitor_task = loop.create_task(limiter.monitor())
+
     connector = aiohttp.TCPConnector(ssl=False, loop=loop, resolver=aiohttp.AsyncResolver(loop=loop),
                                      family=socket.AF_INET, limit=RUN_CONFIG["LIMIT_REQUEST"],
                                      # force_close=True)
@@ -478,7 +481,7 @@ async def main_async_batch_visit(dict_unique, loop, do_sampling):
         # start Queue Pool: When a request is being processed by the remote server, the Python worker
         # is released to be able to work on another request until the answer is received
         async with asyncpool.AsyncPool(loop=loop,
-                                       num_workers=RUN_CONFIG["MAX_WORKERS"],
+                                       num_workers=limiter.max_limit,
                                        name="Pool_{}".format(str(pid)),
                                        logger=log_manager,
                                        worker_co=single_url_visit,
@@ -490,17 +493,26 @@ async def main_async_batch_visit(dict_unique, loop, do_sampling):
             for doc in dict_unique:
                 # print(f"Pushing {doc['url']}")
                 cnt += 1
-                await pool.push(doc, session, do_sampling)
+                await pool.push(doc, session, do_sampling, limiter)
 
+    monitor_task.cancel()
     await asyncio.sleep(1)
     # closing independant connector
     await connector.close()
 
 
-async def single_url_visit(domain, session, do_sampling):
+async def single_url_visit(domain, session, do_sampling, limiter):
     """
     Launch one HTTP request to one domain
     """
+    await limiter.acquire()
+    try:
+        return await _single_url_visit(domain, session, do_sampling)
+    finally:
+        limiter.release()
+
+
+async def _single_url_visit(domain, session, do_sampling):
     url = domain["url"]
     if RUN_CONFIG["DEBUG_PRINT"]:
         print("Starting url: {}".format(url))
@@ -579,14 +591,19 @@ async def single_url_visit(domain, session, do_sampling):
                         chunks.append(chunk)
 
                 # CHECK IF RESPONSE IN LESS THAN MAX_MB TO LATER PROCESS THE DOMAIN PAGE
-                if total_bytes < max_range_bytes:
-                    async with session.get(full_url, timeout=RUN_CONFIG["MINUTES_TO_TIMEOUT"] * 60) as response:
-                        page = dict()
-                        page["text"] = b"".join(chunks).decode(errors="ignore")
-                        page["url"] = response.url
-                        page["history"] = response.history
-                        page["status"] = response.status
-                        # wb.is_error = False
+                # (url/history/status are taken from the same response: no second download of the page)
+                if total_bytes <= max_range_bytes:
+                    page = dict()
+                    page["text"] = b"".join(chunks).decode(errors="ignore")
+                    page["url"] = response.url
+                    page["history"] = response.history
+                    page["status"] = response.status
+
+            # CONTENT-LENGTH LARGER THAN MAX_MB: the page is not downloaded
+            else:
+                wb.is_error = True
+                wb.comment = "Page size too large error"
+                wb.to_revisit = False
 
     # Catching errors
     except aiohttp.client.ClientConnectorError as e:
@@ -736,7 +753,8 @@ def request_full_file_target_links(target_links_to_visit):
     remove_url_saved(RUN_CONFIG["PATH_URL_REVISIT_SAVE"])
 
     # todo: add NON-PARALLEL option
-    Parallel(n_jobs=RUN_CONFIG["MAX_PROCESSES"])(delayed(async_url_batch_visit)(batch) for batch in url_batches)
+    run_adaptive(async_url_batch_visit, url_batches, key="MAX_PROCESSES", phase="requests_targets",
+                 dynamic_kwargs={"max_workers": "MAX_WORKERS"})
     list_target_websites = [dico_to_website(d) for d in gather_url_saved(RUN_CONFIG["PATH_URL_REVISIT_SAVE"])]
 
     remove_url_saved(RUN_CONFIG["PATH_URL_REVISIT_SAVE"])
@@ -965,8 +983,7 @@ def _take_screenshot_with_new_driver(link):
 def request_full_file_with_browser(links):
     """Visit a list of URLs with Chrome webdriver"""
     # visiting links
-    all_resu = Parallel(n_jobs=RUN_CONFIG["WORKERS_POST_PROCESSING"])(
-        delayed(single_url_browser_load_visit)(link) for link in tqdm(links))
+    all_resu = adaptive_parallel(single_url_browser_load_visit, links, phase="browser")
 
     all_resu = [e for e in all_resu if (e is not None)]
 
@@ -981,10 +998,8 @@ def request_full_file_with_browser(links):
             sam_plog.it(f"RETRY 1: Retrying {len(failed_ss)} failed screenshots...")
 
             workers = max(1, RUN_CONFIG["WORKERS_POST_PROCESSING"] // 2)
-            Parallel(n_jobs=workers)(
-                delayed(_take_screenshot_with_new_driver)(link)
-                for link in tqdm(failed_ss)
-            )
+            adaptive_parallel(_take_screenshot_with_new_driver, failed_ss, phase="screenshots_retry",
+                              max_jobs=workers)
 
         # after all retries, persist any still-missing screenshots to a file for manual re-run
         still_failed = [link for link in links if link.get('to_sample') and not (Path(RUN_CONFIG["MAIN_DIR"]) / link['ss_filename']).exists()]
@@ -1017,9 +1032,7 @@ def retry_pending_screenshots():
 
     print(f"RETRY 1: Retrying {len(links)} pending screenshots.")
     workers = max(1, RUN_CONFIG["WORKERS_POST_PROCESSING"] // 2)
-    Parallel(n_jobs=workers)(
-        delayed(_take_screenshot_with_new_driver)(l) for l in tqdm(links)
-    )
+    adaptive_parallel(_take_screenshot_with_new_driver, links, phase="screenshots_pending", max_jobs=workers)
 
     still_failed = [l for l in links if not (main_dir / l['ss_filename']).exists()]
     if still_failed:
@@ -1204,4 +1217,4 @@ def initiate_browser_driver():
     # loading timeout
     driver.set_page_load_timeout(LOADING_TIME)
     driver.implicitly_wait(LOADING_TIME)
-    return driver
+    return driver

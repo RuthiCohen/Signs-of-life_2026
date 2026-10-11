@@ -50,7 +50,8 @@ services:
   # Crawler - No Screenshoots
   crawler_no-screenshoots:
     # image: docker-crawler:v1.1.4_20260519
-    image: docker-crawler:v1.1.6_20260520
+    # image: docker-crawler:v1.1.6_20260520
+    image: docker-crawler:v1.1.10_20260924
     volumes:
       - ../input:/signs-of-life/input
       - ./docker_volumes/crawler/logging:/signs-of-life/logging

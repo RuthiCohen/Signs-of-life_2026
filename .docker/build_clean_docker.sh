@@ -22,5 +22,5 @@ echo "Generated Tag: $TAG_VERSION"
 #docker compose build --no-cache && docker tag docker-crawler:latest "docker-crawler:$TAG_VERSION"
 cd ..
 docker  build --no-cache -f .docker/Dockerfile --tag "docker-crawler:$TAG_VERSION" .
-cd .docker/ (edited)
+cd .docker/
 #docker compose build --no-cache && docker tag docker-crawler:latest "docker-crawler:$TAG_VERSION" 

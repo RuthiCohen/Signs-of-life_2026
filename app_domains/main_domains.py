@@ -13,6 +13,7 @@ import sys
 
 from config import RUN_CONFIG, MAIN_DIR
 from utils import remove_url_saved, PerformanceLogger
+from memory_guard import GOVERNOR, release_workers
 import output_processing as op
 
 # steps
@@ -201,6 +202,7 @@ def main():
     :return: save result
     """
     plog.perf_go("Starting Crawler")  # profiles code until perf_end
+    GOVERNOR.start_monitor()
     print("Version: {}".format(RUN_CONFIG["version"]))
     super_raw_files = os.listdir(RUN_CONFIG["input_folder"])
     super_raw_files = sorted(super_raw_files, reverse=False)
@@ -266,6 +268,7 @@ def main():
             os.environ["SAMPLING_LOCAL_FOLDER"] = sampling_subfolder  # inherited by spawned joblib workers
 
         # Main class
+        GOVERNOR.set_phase("load_" + f)
         ctl = Controller(f)
         if RUN_CONFIG["DO_REQUESTS"]:
             print("------------------REQUESTING------------------------")
@@ -352,6 +355,8 @@ def main():
                         a = time.time()
                         _ = ctl.predict_is_parked()
                         print("Parking prediction time : {}".format(time.time() - a))
+                        # classification workers keep the tokenizers / ML models in memory: free them
+                        release_workers("after classification")
                     except Exception as e:
                         print("CRITICAL ERROR: parking prediction failed: {}\t{}".format(type(e), str(e)))
                         plog.it("CRITICAL ERROR: parking prediction failed: {}\t{}".format(type(e), str(e)),
@@ -513,6 +518,7 @@ def main():
                 if RUN_CONFIG["DO_HCJ_EXTRACTION"]:
                     try:
                         print("Headers/Cookies/Javascript analysis")
+                        GOVERNOR.set_phase("hcj")
                         a = time.time()
                         _ = ctl.ctl_analyse_hcj()
                         print("Headers/Cookies/Javascript analysis time : {}".format(time.time() - a))
@@ -538,6 +544,7 @@ def main():
         del ctl
         gc.collect()
         print(f"{_mem()} after del ctl + gc.collect")
+        GOVERNOR.set_phase("concat_output")
 
         # concat results
         plog.it("Starting Concatenation")
@@ -587,6 +594,7 @@ def main():
 
         
         retry_pending_screenshots()
+        GOVERNOR.summary(f)
 
     plog.perf_end("Crawler Finished")
 

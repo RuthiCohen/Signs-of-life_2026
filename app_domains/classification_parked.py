@@ -7,8 +7,7 @@ import pandas as pd
 from os.path import join
 from pathlib import Path
 import os, sys, traceback
-from joblib import Parallel, delayed
-from tqdm import tqdm
+from memory_guard import adaptive_parallel
 import json
 
 from config import RUN_CONFIG
@@ -1024,9 +1023,7 @@ def predict_parking(documents):
     plog2.perf_go(f"Performing first classification on {len(documents)} urls")
     if RUN_CONFIG["MULTI_PROCESSING"]:
         plog.it("Performing multi-processing first classification")
-        list_res = Parallel(n_jobs=RUN_CONFIG["WORKERS_POST_PROCESSING"])(
-            delayed(single_page_classify_parking)(batch) for batch in
-            tqdm(X_first))
+        list_res = adaptive_parallel(single_page_classify_parking, X_first, phase="classification")
     else:
         # non parallel
         list_res = []
@@ -1063,8 +1060,8 @@ def predict_parking(documents):
         # predict
         if RUN_CONFIG["MULTI_PROCESSING"]:
             plog.it("Performing multi-processing second classification")
-            list_res_second = Parallel(n_jobs=RUN_CONFIG["WORKERS_POST_PROCESSING"])(
-                delayed(single_page_classify_parking)(website) for website in tqdm(X_target_websites))
+            list_res_second = adaptive_parallel(single_page_classify_parking, X_target_websites,
+                                                phase="classification_targets")
         else:
             # --non parallel
             list_res_second = []
@@ -1102,8 +1099,8 @@ def predict_parking(documents):
             plog2.perf_go(f"Performing JS classification on {len(links_to_revisit_with_js)} urls")
             # predict
             if RUN_CONFIG["MULTI_PROCESSING"]:
-                list_res_js = Parallel(n_jobs=RUN_CONFIG["WORKERS_POST_PROCESSING"])(
-                    delayed(single_page_classify_parking)(website) for website in tqdm(X_js_rendered_websites))
+                list_res_js = adaptive_parallel(single_page_classify_parking, X_js_rendered_websites,
+                                                phase="classification_js")
             else:
                 # --non parallel
                 list_res_js = []
@@ -1142,8 +1139,8 @@ def predict_parking(documents):
                     break
                 sam_plog.it(f"Screenshot attempt {attempt}/{max_retries}: {len(remaining)} remaining...")
                 workers = max(1, RUN_CONFIG["WORKERS_POST_PROCESSING"] // attempt)
-                Parallel(n_jobs=workers)(
-                    delayed(_take_screenshot_with_new_driver)(link) for link in tqdm(remaining))
+                adaptive_parallel(_take_screenshot_with_new_driver, remaining, phase="screenshots",
+                                  max_jobs=workers)
             still_failed = [e for e in links_to_screenshot if not (Path(RUN_CONFIG["MAIN_DIR"]) / e["ss_filename"]).exists()]
             if still_failed:
                 pending_file = sampling_folder / "pending_screenshots.json"

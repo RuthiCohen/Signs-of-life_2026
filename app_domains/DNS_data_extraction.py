@@ -2,8 +2,7 @@ import dns
 import dns.rdatatype
 import dns.resolver as reso
 
-from joblib import Parallel, delayed
-from tqdm import tqdm
+from memory_guard import adaptive_parallel
 import pandas as pd
 
 from config import RUN_CONFIG
@@ -15,8 +14,7 @@ def extract_dns_data(documents, datatype):
 
     # First classification
     if RUN_CONFIG["MULTI_PROCESSING"]:
-        list_res = Parallel(n_jobs=RUN_CONFIG["WORKERS_POST_PROCESSING"])(
-            delayed(extract_dns)(batch) for batch in tqdm(X_first))
+        list_res = adaptive_parallel(extract_dns, X_first, phase="dns_" + datatype)
     else:
         # non parallel
         list_res = []

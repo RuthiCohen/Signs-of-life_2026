@@ -2,8 +2,10 @@ FROM python:3.7.17-bullseye
 
 WORKDIR /signs-of-life
 
-RUN apt-get update
-
+#RUN apt-get update
+RUN echo "deb http://archive.debian.org/debian bullseye main contrib non-free" > /etc/apt/sources.list && \
+    apt-get -o Acquire::Check-Valid-Until=false update
+    
 # Install postgreSQL, C++ Build Tools & other requried packages
 RUN apt install -y libpq-dev jq wget unzip htop tmux xdg-utils build-essential git vim curl libnspr4 \
     libnss3 \
@@ -19,7 +21,6 @@ RUN apt install -y libpq-dev jq wget unzip htop tmux xdg-utils build-essential g
     libgbm1 \
     libxrandr2 \
     libasound2 \
-    
     --no-install-recommends && \
     rm -rf /var/lib/apt/lists/* && \
     apt install -f 
